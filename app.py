@@ -1,209 +1,87 @@
-import streamlit as st
-import os
-from resume_parser import extract_text_from_pdf
-from skill_analyzer import analyze_skills
-from chat_engine import ChatEngine
+"""
+AI Recruitment Screening Bot — POC
+Single file, minimal UI, runs with: streamlit run app.py
+Requires: pip install streamlit pdfplumber google-generativeai python-dotenv
+"""
 
-# ── Page config ──────────────────────────────────────────────────────────────
+import io
+import json
+import os
+import re
+
+import google.generativeai as genai
+import pdfplumber
+import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ─────────────────────────────────────────────
+# PAGE CONFIG
+# ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="AI Recruitment Interview",
+    page_title="RecruitAI",
     page_icon="🎯",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    layout="centered",
 )
 
-# ── Custom CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap');
+    /* Clean minimal look */
+    .block-container { padding-top: 2rem; max-width: 800px; }
 
-    html, body, [class*="css"] {
-        font-family: 'Inter', sans-serif;
-    }
-
-    .main { background: #0f1117; }
-
-    .stApp {
-        background: linear-gradient(135deg, #0f1117 0%, #1a1f2e 100%);
-        color: #e2e8f0;
-    }
-
-    /* Sidebar */
-    section[data-testid="stSidebar"] {
-        background: #161b27;
-        border-right: 1px solid #2d3748;
-    }
-
-    /* Phase badge */
-    .phase-badge {
-        display: inline-block;
-        padding: 4px 14px;
-        border-radius: 20px;
-        font-size: 12px;
-        font-weight: 600;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        margin-bottom: 12px;
-    }
-    .phase-setup    { background: #2d3748; color: #a0aec0; }
-    .phase-skill    { background: #1a2a1a; color: #68d391; border: 1px solid #276749; }
-    .phase-interview{ background: #1a1f3a; color: #76e4f7; border: 1px solid #2b6cb0; }
-
-    /* Chat bubbles */
-    .chat-bubble-ai {
+    /* AI message bubble */
+    .bubble-ai {
         background: #1e2535;
-        border: 1px solid #2d3748;
-        border-left: 3px solid #667eea;
-        border-radius: 0 12px 12px 12px;
+        border-left: 3px solid #4f8ef7;
         padding: 12px 16px;
-        margin: 8px 0 8px 0;
-        max-width: 85%;
+        border-radius: 0 10px 10px 10px;
+        margin: 8px 0;
+        font-size: 15px;
         color: #e2e8f0;
-        font-size: 14px;
-        line-height: 1.6;
     }
-    .chat-bubble-user {
-        background: #2a3a5c;
-        border: 1px solid #3a5282;
-        border-radius: 12px 0 12px 12px;
+    /* User message bubble */
+    .bubble-user {
+        background: #1a2e1a;
+        border-left: 3px solid #28a745;
         padding: 12px 16px;
-        margin: 8px 0 8px auto;
-        max-width: 75%;
+        border-radius: 0 10px 10px 10px;
+        margin: 8px 0;
+        font-size: 15px;
         color: #e2e8f0;
-        font-size: 14px;
-        line-height: 1.6;
-        text-align: right;
     }
-    .chat-label {
+    .role-label {
         font-size: 11px;
-        font-weight: 600;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        margin-bottom: 4px;
-    }
-    .label-ai   { color: #667eea; }
-    .label-user { color: #76e4f7; text-align: right; }
-
-    /* Skill pill */
-    .skill-pill {
-        display: inline-block;
-        background: #2d2a1a;
-        border: 1px solid #744210;
-        color: #f6ad55;
-        padding: 3px 10px;
-        border-radius: 12px;
-        font-size: 12px;
-        margin: 3px;
-    }
-    .skill-pill-ok {
-        display: inline-block;
-        background: #1a2a1a;
-        border: 1px solid #276749;
-        color: #68d391;
-        padding: 3px 10px;
-        border-radius: 12px;
-        font-size: 12px;
-        margin: 3px;
-    }
-
-    /* Section header */
-    .section-header {
-        font-family: 'Space Grotesk', sans-serif;
-        font-size: 22px;
         font-weight: 700;
-        color: #f7fafc;
+        text-transform: uppercase;
+        color: #888;
         margin-bottom: 4px;
     }
-    .section-sub {
-        font-size: 13px;
-        color: #718096;
-        margin-bottom: 20px;
-    }
-
-    /* Divider */
-    .fancy-divider {
-        height: 1px;
-        background: linear-gradient(90deg, #667eea33, #764ba233, transparent);
-        margin: 20px 0;
-    }
-
-    /* Progress bar override */
-    .stProgress > div > div {
-        background: linear-gradient(90deg, #667eea, #764ba2);
-    }
-
-    /* Input */
-    .stTextInput > div > div > input,
-    .stTextArea > div > div > textarea {
-        background: #1e2535 !important;
-        border: 1px solid #2d3748 !important;
-        color: #e2e8f0 !important;
-        border-radius: 8px !important;
-    }
-
-    /* Button */
-    .stButton > button {
-        background: linear-gradient(135deg, #667eea, #764ba2);
-        color: white;
-        border: none;
-        border-radius: 8px;
+    .phase-tag {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 12px;
+        font-size: 12px;
         font-weight: 600;
-        padding: 8px 24px;
-        transition: opacity 0.2s;
-    }
-    .stButton > button:hover { opacity: 0.85; }
-
-    /* File uploader */
-    [data-testid="stFileUploader"] {
-        background: #1e2535;
-        border: 1px dashed #4a5568;
-        border-radius: 10px;
-        padding: 10px;
-    }
-
-    /* Info boxes */
-    .info-box {
-        background: #1a2535;
-        border: 1px solid #2d4a6a;
-        border-radius: 10px;
-        padding: 14px 18px;
-        margin: 10px 0;
-        font-size: 13px;
-        color: #a0c4e8;
-    }
-    .warning-box {
-        background: #2a1f10;
-        border: 1px solid #744210;
-        border-radius: 10px;
-        padding: 14px 18px;
-        margin: 10px 0;
-        font-size: 13px;
-        color: #f6ad55;
-    }
-    .success-box {
-        background: #0f2a1a;
-        border: 1px solid #276749;
-        border-radius: 10px;
-        padding: 14px 18px;
-        margin: 10px 0;
-        font-size: 13px;
-        color: #68d391;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Session state init ────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+# SESSION STATE
+# ─────────────────────────────────────────────
 def init_state():
     defaults = {
-        "phase": "setup",           # setup → skill_justification → interview
+        "phase": "setup",               # setup | skill_check | interview | done
         "resume_text": "",
         "jd_text": "",
-        "skill_analysis": None,     # {listed, used, orphan}
-        "orphan_skills": [],
-        "current_orphan_idx": 0,
-        "justified_skills": {},     # skill → justification text
-        "chat_history": [],         # [{role, content}]
-        "engine": None,
+        "orphan_skills": [],            # skills listed but not used in experience
+        "unverified_skills": [],        # skills that failed justification
+        "current_skill_idx": 0,
+        "skill_attempts": 0,            # attempts for current skill
+        "justified_skills": {},         # skill -> justification or "UNVERIFIED"
+        "chat_history": [],             # [{"role": "ai"|"user", "content": "..."}]
         "api_key": os.getenv("GEMINI_API_KEY", ""),
     }
     for k, v in defaults.items():
@@ -212,254 +90,434 @@ def init_state():
 
 init_state()
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown('<div class="section-header">🎯 RecruitAI</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">AI-powered screening assistant</div>', unsafe_allow_html=True)
-    st.markdown('<div class="fancy-divider"></div>', unsafe_allow_html=True)
 
-    # API Key
-    api_key_input = st.text_input(
+# ─────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────
+def get_model():
+    """Configure and return the Gemini model."""
+    genai.configure(api_key=st.session_state.api_key)
+    return genai.GenerativeModel("gemini-3.1-flash-lite")
+
+
+def ask_gemini(prompt: str) -> str:
+    """Single-shot call to Gemini. Returns plain text."""
+    model = get_model()
+    response = model.generate_content(prompt)
+    return response.text.strip()
+
+
+def parse_resume(uploaded_file) -> str:
+    """Extract all text from a PDF resume."""
+    pdf_bytes = uploaded_file.read()
+    pages = []
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                pages.append(text.strip())
+    return "\n\n".join(pages)
+
+
+def detect_orphan_skills(resume_text: str) -> list:
+    """Ask Gemini to find skills listed but not used in experience/projects."""
+    prompt = f"""
+You are a resume parser. Analyse the resume below.
+
+Return ONLY a valid JSON object with these exact keys:
+- "listed_skills": skills explicitly named in a Skills or Technologies section
+- "used_skills": skills that appear in Work Experience or Projects sections
+- "orphan_skills": skills in listed_skills that do NOT appear in work/projects
+
+Rules:
+- Normalise names (python -> Python, reactjs -> React)
+- Be conservative — only flag a skill as orphan if you are confident it's truly absent from experience
+- Return ONLY the JSON. No markdown, no explanation, no code fences.
+
+Resume:
+{resume_text}
+"""
+    raw = ask_gemini(prompt)
+    cleaned = re.sub(r"```(?:json)?", "", raw).strip().strip("`").strip()
+    try:
+        data = json.loads(cleaned)
+        return data.get("orphan_skills", [])
+    except json.JSONDecodeError:
+        return []  # if parsing fails, skip skill check and go straight to interview
+
+
+def format_history(history: list) -> str:
+    """Format chat history as plain text for inclusion in prompts."""
+    lines = []
+    for msg in history:
+        role = "Interviewer" if msg["role"] == "ai" else "Candidate"
+        lines.append(f"{role}: {msg['content']}")
+    return "\n".join(lines)
+
+
+def render_chat(history: list):
+    """Render all messages in the chat history."""
+    for msg in history:
+        if msg["role"] == "ai":
+            st.markdown(f'<div class="role-label">🤖 Interviewer</div><div class="bubble-ai">{msg["content"]}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="role-label">🧑 You</div><div class="bubble-user">{msg["content"]}</div>', unsafe_allow_html=True)
+
+
+def add_msg(role: str, content: str):
+    """Append a message to chat history."""
+    st.session_state.chat_history.append({"role": role, "content": content})
+
+
+# ─────────────────────────────────────────────
+# AI FUNCTIONS
+# ─────────────────────────────────────────────
+def ask_skill_question(skill: str) -> str:
+    prompt = f"""
+You are a professional technical recruiter doing a pre-screening call.
+
+The candidate listed "{skill}" in their skills section but it does not appear
+anywhere in their work experience or projects.
+
+Ask them ONE focused question: where and how did they use this skill?
+Be direct but polite. One question only.
+"""
+    return ask_gemini(prompt)
+
+
+def evaluate_skill_answer(skill: str, answer: str, history: list) -> tuple[str, bool]:
+    prompt = f"""
+You are a technical recruiter evaluating a candidate's justification for a skill.
+
+Skill: {skill}
+Conversation so far:
+{format_history(history)}
+
+Candidate's latest answer: "{answer}"
+
+Decide if this is a satisfactory explanation (concrete usage, real context, some outcome).
+
+If YES: acknowledge briefly in 1-2 sentences, then add exactly: [ACCEPTED]
+If NO: ask ONE sharp follow-up question. Do NOT add [ACCEPTED].
+
+Be concise and professional.
+"""
+    raw = ask_gemini(prompt)
+    accepted = "[ACCEPTED]" in raw
+    clean = raw.replace("[ACCEPTED]", "").strip()
+    return clean, accepted
+
+
+def start_interview() -> str:
+    # Build a summary of what we know about their skills
+    skill_notes = ""
+    if st.session_state.justified_skills:
+        lines = []
+        for skill, note in st.session_state.justified_skills.items():
+            if note == "UNVERIFIED":
+                lines.append(f"  - {skill}: could not justify (flag for follow-up)")
+            else:
+                lines.append(f"  - {skill}: verified — {note[:150]}")
+        skill_notes = "Pre-screening skill notes:\n" + "\n".join(lines)
+
+    prompt = f"""
+You are an experienced technical interviewer conducting a structured interview.
+
+Candidate Resume (excerpt):
+{st.session_state.resume_text[:3000]}
+
+Job Description:
+{st.session_state.jd_text[:2000]}
+
+{skill_notes}
+
+Instructions:
+- Ask relevant questions based on the JD and the candidate's background
+- Mix technical and behavioural questions
+- If the candidate asks about the role or JD, answer honestly from the JD then continue
+- Ask ONE question at a time
+- Do NOT mention scores or evaluations
+
+Start with a brief, warm opening and your first question.
+"""
+    return ask_gemini(prompt)
+
+
+def interview_turn(user_message: str) -> str:
+    prompt = f"""
+You are an experienced technical interviewer. Continue the interview below.
+
+Candidate Resume (excerpt):
+{st.session_state.resume_text[:3000]}
+
+Job Description:
+{st.session_state.jd_text[:2000]}
+
+Conversation so far:
+{format_history(st.session_state.chat_history)}
+
+Instructions:
+- If the candidate answered your question: acknowledge briefly, then ask your next question or probe deeper
+- If the candidate asked about the role or JD: answer from the JD, then return to interviewing
+- ONE question at a time. Don't repeat earlier questions.
+- After 8-10 exchanges total, wrap up the interview professionally.
+"""
+    return ask_gemini(prompt)
+
+
+# ─────────────────────────────────────────────
+# UI — SIDEBAR
+# ─────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("### 🎯 RecruitAI")
+    st.caption("AI-powered screening POC")
+    st.divider()
+
+    api_input = st.text_input(
         "Gemini API Key",
         value=st.session_state.api_key,
         type="password",
         placeholder="AIza...",
         help="Free key from aistudio.google.com",
     )
-    if api_key_input:
-        st.session_state.api_key = api_key_input
+    if api_input:
+        st.session_state.api_key = api_input
 
-    st.markdown('<div class="fancy-divider"></div>', unsafe_allow_html=True)
+    st.divider()
 
     # Phase indicator
-    phase_labels = {
-        "setup": ("Setup", "phase-setup"),
-        "skill_justification": ("Skill Check", "phase-skill"),
-        "interview": ("Live Interview", "phase-interview"),
+    phase_colors = {
+        "setup":      ("⚙️ Setup",      "#888"),
+        "skill_check":("🔍 Skill Check", "#e67e22"),
+        "interview":  ("🎤 Interview",   "#2980b9"),
+        "done":       ("✅ Complete",    "#27ae60"),
     }
-    label, cls = phase_labels[st.session_state.phase]
-    st.markdown(f'<div class="phase-badge {cls}">{label}</div>', unsafe_allow_html=True)
+    label, color = phase_colors[st.session_state.phase]
+    st.markdown(f'<span class="phase-tag" style="background:{color}22;color:{color};border:1px solid {color}44">{label}</span>', unsafe_allow_html=True)
 
-    if st.session_state.phase == "skill_justification":
-        total = len(st.session_state.orphan_skills)
-        done = st.session_state.current_orphan_idx
-        st.progress(done / total if total else 1.0)
-        st.caption(f"Verifying skill {done}/{total}")
+    if st.session_state.orphan_skills:
+        st.divider()
+        st.caption("Skills to verify:")
+        for i, skill in enumerate(st.session_state.orphan_skills):
+            note = st.session_state.justified_skills.get(skill)
+            if note == "UNVERIFIED":
+                st.markdown(f"❌ {skill}")
+            elif note:
+                st.markdown(f"✅ {skill}")
+            elif i == st.session_state.current_skill_idx:
+                st.markdown(f"🔍 **{skill}**")
+            else:
+                st.markdown(f"⏳ {skill}")
 
-    if st.session_state.phase == "interview":
-        msgs = len([m for m in st.session_state.chat_history if m["role"] == "interviewer"])
-        st.caption(f"Questions asked: {msgs}")
-
-    st.markdown('<div class="fancy-divider"></div>', unsafe_allow_html=True)
-
-    # Skill summary panel
-    if st.session_state.skill_analysis:
-        sa = st.session_state.skill_analysis
-        st.markdown("**Skill Analysis**")
-        st.markdown(
-            "".join(f'<span class="skill-pill-ok">{s}</span>' for s in sa.get("used_skills", [])),
-            unsafe_allow_html=True,
-        )
-        if sa.get("orphan_skills"):
-            st.markdown("**Unverified Skills**")
-            st.markdown(
-                "".join(f'<span class="skill-pill">{s}</span>' for s in sa.get("orphan_skills", [])),
-                unsafe_allow_html=True,
-            )
-
-    st.markdown('<div class="fancy-divider"></div>', unsafe_allow_html=True)
-    if st.button("🔄 Reset Session"):
+    st.divider()
+    if st.button("🔄 Reset", use_container_width=True):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
 
-# ── Helper: render chat ───────────────────────────────────────────────────────
-def render_chat(history):
-    for msg in history:
-        role = msg["role"]
-        content = msg["content"]
-        if role in ("interviewer", "ai"):
-            st.markdown(f'<div class="chat-label label-ai">🤖 Interviewer</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="chat-bubble-ai">{content}</div>', unsafe_allow_html=True)
-        else:
-            st.markdown(f'<div class="chat-label label-user">You</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="chat-bubble-user">{content}</div>', unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PHASE 1: SETUP
-# ══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────
+# PHASE 1 — SETUP
+# ─────────────────────────────────────────────
 if st.session_state.phase == "setup":
-    st.markdown('<div class="section-header">Upload & Configure</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-sub">Provide the resume and job description to begin the screening process.</div>', unsafe_allow_html=True)
+    st.title("AI Recruitment Screening")
+    st.caption("Upload a resume and job description to begin.")
+    st.divider()
 
-    col1, col2 = st.columns(2, gap="large")
+    resume_file = st.file_uploader("📄 Upload Resume (PDF)", type=["pdf"])
+    if resume_file:
+        with st.spinner("Reading resume..."):
+            st.session_state.resume_text = parse_resume(resume_file)
+        st.success(f"Resume parsed — {len(st.session_state.resume_text.split())} words.")
 
-    with col1:
-        st.markdown("#### 📄 Resume")
-        resume_file = st.file_uploader("Upload PDF resume", type=["pdf"], key="resume_uploader")
-        if resume_file:
-            with st.spinner("Parsing resume..."):
-                text = extract_text_from_pdf(resume_file)
-                st.session_state.resume_text = text
-            st.markdown(
-                f'<div class="success-box">✅ Resume parsed — {len(text.split())} words extracted.</div>',
-                unsafe_allow_html=True,
-            )
-            with st.expander("Preview extracted text"):
-                st.text(text[:2000] + ("..." if len(text) > 2000 else ""))
+    st.session_state.jd_text = st.text_area(
+        "📋 Paste Job Description",
+        value=st.session_state.jd_text,
+        height=180,
+        placeholder="We are looking for a Python engineer with experience in FastAPI...",
+    )
 
-    with col2:
-        st.markdown("#### 📋 Job Description")
-        jd_input = st.text_area(
-            "Paste the job description here",
-            height=220,
-            placeholder="We are looking for a Senior Python Engineer with experience in FastAPI, LLMs, and cloud deployment...",
-            key="jd_input",
-        )
-        if jd_input:
-            st.session_state.jd_text = jd_input
-
-    st.markdown('<div class="fancy-divider"></div>', unsafe_allow_html=True)
+    st.divider()
 
     ready = st.session_state.resume_text and st.session_state.jd_text and st.session_state.api_key
+
     if not ready:
         missing = []
-        if not st.session_state.api_key:    missing.append("Gemini API key (sidebar)")
-        if not st.session_state.resume_text: missing.append("resume PDF")
-        if not st.session_state.jd_text:    missing.append("job description")
-        st.markdown(
-            f'<div class="info-box">ℹ️ Still needed: {", ".join(missing)}.</div>',
-            unsafe_allow_html=True,
-        )
+        if not st.session_state.api_key:     missing.append("API key")
+        if not st.session_state.resume_text: missing.append("resume")
+        if not st.session_state.jd_text:     missing.append("job description")
+        st.info(f"Still needed: {', '.join(missing)}")
 
-    if st.button("Analyse & Start →", disabled=not ready):
-        with st.spinner("Analysing resume with AI..."):
-            engine = ChatEngine(
-                api_key=st.session_state.api_key,
-                resume_text=st.session_state.resume_text,
-                jd_text=st.session_state.jd_text,
-            )
-            st.session_state.engine = engine
-            analysis = analyze_skills(
-                engine,
-                st.session_state.resume_text,
-            )
-            st.session_state.skill_analysis = analysis
-            orphans = analysis.get("orphan_skills", [])
+    if st.button("Analyse & Start →", disabled=not ready, type="primary", use_container_width=True):
+        with st.spinner("Analysing resume for skill gaps..."):
+            orphans = detect_orphan_skills(st.session_state.resume_text)
             st.session_state.orphan_skills = orphans
-            st.session_state.current_orphan_idx = 0
+            st.session_state.current_skill_idx = 0
+            st.session_state.skill_attempts = 0
 
         if orphans:
-            st.session_state.phase = "skill_justification"
-            # Seed first question
-            first_q = engine.ask_skill_justification(orphans[0])
-            st.session_state.chat_history = [{"role": "interviewer", "content": first_q}]
+            st.session_state.phase = "skill_check"
+            with st.spinner("Preparing first question..."):
+                first_q = ask_skill_question(orphans[0])
+            add_msg("ai", first_q)
         else:
             st.session_state.phase = "interview"
-            opening = engine.start_interview()
-            st.session_state.chat_history = [{"role": "interviewer", "content": opening}]
+            with st.spinner("Starting interview..."):
+                opening = start_interview()
+            add_msg("ai", opening)
 
         st.rerun()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PHASE 2: SKILL JUSTIFICATION
-# ══════════════════════════════════════════════════════════════════════════════
-elif st.session_state.phase == "skill_justification":
+
+# ─────────────────────────────────────────────
+# PHASE 2 — SKILL CHECK
+# ─────────────────────────────────────────────
+elif st.session_state.phase == "skill_check":
+    idx = st.session_state.current_skill_idx
     orphans = st.session_state.orphan_skills
-    idx = st.session_state.current_orphan_idx
     current_skill = orphans[idx] if idx < len(orphans) else None
+    MAX_ATTEMPTS = 3
 
-    st.markdown('<div class="section-header">Skill Verification</div>', unsafe_allow_html=True)
-    st.markdown(
-        f'<div class="section-sub">You listed skills that aren\'t visible in your work history. Let\'s verify them before the interview.</div>',
-        unsafe_allow_html=True,
-    )
-
+    st.title("Skill Verification")
     if current_skill:
-        st.markdown(
-            f'<div class="warning-box">⚠️ Verifying: <strong>{current_skill}</strong> — skill listed but not found in work experience or projects.</div>',
-            unsafe_allow_html=True,
-        )
+        attempts_left = MAX_ATTEMPTS - st.session_state.skill_attempts
+        st.caption(f"Verifying: **{current_skill}** — {attempts_left} attempt(s) remaining")
+    st.divider()
 
     render_chat(st.session_state.chat_history)
-
-    st.markdown('<div class="fancy-divider"></div>', unsafe_allow_html=True)
-
-    with st.container():
-        user_input = st.text_input(
-            "Your response",
-            placeholder="Explain where and how you used this skill...",
-            key=f"skill_input_{idx}",
-            label_visibility="collapsed",
-        )
-        col_send, col_skip = st.columns([1, 5])
-        with col_send:
-            send = st.button("Send →", key="send_skill")
-
-    if send and user_input.strip():
-        engine: ChatEngine = st.session_state.engine
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
-
-        with st.spinner("Evaluating..."):
-            response, accepted = engine.evaluate_skill_justification(
-                skill=current_skill,
-                user_response=user_input,
-                history=st.session_state.chat_history,
-            )
-
-        st.session_state.chat_history.append({"role": "interviewer", "content": response})
-
-        if accepted:
-            st.session_state.justified_skills[current_skill] = user_input
-            next_idx = idx + 1
-            st.session_state.current_orphan_idx = next_idx
-
-            if next_idx >= len(orphans):
-                # All skills verified — move to interview
-                opening = engine.start_interview(
-                    justified_skills=st.session_state.justified_skills
-                )
-                st.session_state.chat_history = [{"role": "interviewer", "content": opening}]
-                st.session_state.phase = "interview"
-            else:
-                # Next skill
-                next_skill = orphans[next_idx]
-                next_q = engine.ask_skill_justification(next_skill)
-                st.session_state.chat_history.append({"role": "interviewer", "content": next_q})
-
-        st.rerun()
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PHASE 3: INTERVIEW
-# ══════════════════════════════════════════════════════════════════════════════
-elif st.session_state.phase == "interview":
-    st.markdown('<div class="section-header">Live Interview</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="section-sub">A two-way conversation — answer the interviewer\'s questions or ask your own about the role.</div>',
-        unsafe_allow_html=True,
-    )
-
-    render_chat(st.session_state.chat_history)
-
-    st.markdown('<div class="fancy-divider"></div>', unsafe_allow_html=True)
+    st.divider()
 
     user_input = st.text_input(
-        "Your message",
-        placeholder="Answer the question, or ask something about the role...",
-        key="interview_input",
+        "Your answer",
+        placeholder="Explain where and how you used this skill...",
+        key=f"skill_input_{idx}_{st.session_state.skill_attempts}",
         label_visibility="collapsed",
     )
-    st.button_send = st.button("Send →", key="send_interview")
 
-    if st.button_send and user_input.strip():
-        engine: ChatEngine = st.session_state.engine
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
+    if st.button("Send →", type="primary", key=f"send_skill_{idx}"):
+        if user_input.strip():
+            add_msg("user", user_input)
+            st.session_state.skill_attempts += 1
 
+            with st.spinner("Evaluating..."):
+                response, accepted = evaluate_skill_answer(
+                    skill=current_skill,
+                    answer=user_input,
+                    history=st.session_state.chat_history,
+                )
+
+            add_msg("ai", response)
+
+            def move_to_next_skill():
+                """Move to the next orphan skill or transition to interview."""
+                next_idx = st.session_state.current_skill_idx + 1
+                st.session_state.current_skill_idx = next_idx
+                st.session_state.skill_attempts = 0
+
+                if next_idx >= len(orphans):
+                    # All skills processed — start interview
+                    st.session_state.phase = "interview"
+                    with st.spinner("Starting interview..."):
+                        opening = start_interview()
+                    add_msg("ai", opening)
+                else:
+                    # Ask about next skill
+                    next_skill = orphans[next_idx]
+                    with st.spinner("Preparing next question..."):
+                        next_q = ask_skill_question(next_skill)
+                    add_msg("ai", next_q)
+
+            if accepted:
+                st.session_state.justified_skills[current_skill] = user_input
+                move_to_next_skill()
+            elif st.session_state.skill_attempts >= MAX_ATTEMPTS:
+                # Cap reached — mark unverified and move on
+                st.session_state.justified_skills[current_skill] = "UNVERIFIED"
+                st.session_state.unverified_skills.append(current_skill)
+                add_msg("ai", f"Let's move on. We'll note that **{current_skill}** couldn't be verified and flag it for the hiring team.")
+                move_to_next_skill()
+
+            st.rerun()
+
+
+# ─────────────────────────────────────────────
+# PHASE 3 — INTERVIEW
+# ─────────────────────────────────────────────
+elif st.session_state.phase == "interview":
+    st.title("Live Interview")
+    st.caption("Answer questions or ask about the role — it's a two-way conversation.")
+    st.divider()
+
+    render_chat(st.session_state.chat_history)
+    st.divider()
+
+    col1, col2 = st.columns([5, 1])
+
+    with col1:
+        user_input = st.text_input(
+            "Your message",
+            placeholder="Type your answer, or ask something about the role...",
+            key="interview_input",
+            label_visibility="collapsed",
+        )
+    with col2:
+        send = st.button("Send →", type="primary", use_container_width=True)
+
+    end_col, _ = st.columns([2, 3])
+    with end_col:
+        end = st.button("End Interview", use_container_width=True)
+
+    if send and user_input.strip():
+        add_msg("user", user_input)
         with st.spinner("Thinking..."):
-            response = engine.interview_turn(
-                user_message=user_input,
-                history=st.session_state.chat_history,
-            )
-
-        st.session_state.chat_history.append({"role": "interviewer", "content": response})
+            response = interview_turn(user_input)
+        add_msg("ai", response)
         st.rerun()
+
+    if end:
+        st.session_state.phase = "done"
+        st.rerun()
+
+
+# ─────────────────────────────────────────────
+# PHASE 4 — TRANSCRIPT
+# ─────────────────────────────────────────────
+elif st.session_state.phase == "done":
+    st.title("Interview Complete")
+    st.success("Screening session finished.")
+    st.divider()
+
+    # Skill summary
+    if st.session_state.justified_skills:
+        st.markdown("#### Skill Verification Summary")
+        for skill, note in st.session_state.justified_skills.items():
+            if note == "UNVERIFIED":
+                st.markdown(f"❌ **{skill}** — could not justify")
+            else:
+                st.markdown(f"✅ **{skill}** — verified")
+        st.divider()
+
+    # Full transcript
+    st.markdown("#### Full Interview Transcript")
+    for msg in st.session_state.chat_history:
+        if msg["role"] == "ai":
+            st.markdown(f'<div class="role-label">🤖 Interviewer</div><div class="bubble-ai">{msg["content"]}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="role-label">🧑 Candidate</div><div class="bubble-user">{msg["content"]}</div>', unsafe_allow_html=True)
+
+    st.divider()
+
+    # Download transcript
+    transcript_lines = []
+    for msg in st.session_state.chat_history:
+        role = "INTERVIEWER" if msg["role"] == "ai" else "CANDIDATE"
+        transcript_lines.append(f"{role}:\n{msg['content']}\n")
+    transcript_text = "\n---\n".join(transcript_lines)
+
+    st.download_button(
+        label="⬇️ Download Transcript",
+        data=transcript_text,
+        file_name="interview_transcript.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
